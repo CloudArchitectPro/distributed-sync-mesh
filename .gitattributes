@@ -1,0 +1,4 @@
+# Override GitHub language detection
+*.sh linguist-detectable=false
+*.xml linguist-detectable=false
+*.stignore linguist-detectable=false
