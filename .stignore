@@ -1,0 +1,53 @@
+// Syncthing ignore patterns for development workspaces
+// Copy this file to your synced folder root and rename it to .stignore
+//
+// IMPORTANT: Without these patterns, paths containing spaces inside
+// node_modules will trigger "invalid encrypted path" errors that crash
+// ALL peer connections — not just the affected folder.
+//
+// These patterns apply to ALL subfolders recursively (**/ prefix).
+
+// ── Node.js / JavaScript ──────────────────────────────────────────────────
+**/node_modules
+**/.pnpm-store
+**/.pnpm
+**/.yarn/cache
+**/.yarn/unplugged
+**/.npm
+
+// ── Build output ──────────────────────────────────────────────────────────
+**/dist
+**/build
+**/.next
+**/.nuxt
+**/.output
+**/.svelte-kit
+**/out
+
+// ── Git internals ─────────────────────────────────────────────────────────
+**/.git
+
+// ── Python ────────────────────────────────────────────────────────────────
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.venv
+**/venv
+**/.env
+
+// ── IDE / Editor ──────────────────────────────────────────────────────────
+**/.idea
+**/.vscode
+**/*.swp
+**/*.swo
+
+// ── OS artifacts ──────────────────────────────────────────────────────────
+**/.DS_Store
+**/Thumbs.db
+**/desktop.ini
+
+// ── Logs and temp ─────────────────────────────────────────────────────────
+**/*.log
+**/tmp
+**/.tmp
+**/temp
