@@ -28,7 +28,7 @@ Download the Windows installer from [syncthing.net/downloads](https://syncthing.
 
 ## 2. Configure Autostart at Login
 
-Syncthing should start automatically when you log in. The installer typically creates a scheduled task for this, but verify it exists:
+Syncthing should start automatically when you log in. The installer typically creates a scheduled task for this, but verify it exists.
 
 ### Check via Task Scheduler
 
@@ -37,7 +37,23 @@ Syncthing should start automatically when you log in. The installer typically cr
 3. Look for a task named **"Start Syncthing at logon"** or similar
 4. Confirm the **Actions** tab shows: `%LOCALAPPDATA%\Programs\Syncthing\stctl.exe --start`
 
-### If the task is missing — create it manually
+### Check via PowerShell
+
+```powershell
+# Confirm scheduled task exists
+Get-ScheduledTask -TaskName "Start Syncthing at logon" | Select-Object TaskName, State
+# Expected: State = Ready
+
+# Confirm Syncthing process is running
+Get-Process syncthing -ErrorAction SilentlyContinue
+# Expected: two processes (launcher + main daemon)
+
+# Confirm no startup shortcut conflict exists
+Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Syncthing.lnk"
+# Expected: False — startup shortcut and scheduled task running simultaneously causes duplicate processes
+```
+
+### If the scheduled task is missing — create it
 
 Open PowerShell as Administrator:
 
@@ -62,6 +78,19 @@ Register-ScheduledTask `
     -Force
 ```
 
+### If you previously created a startup shortcut instead
+
+The startup shortcut method (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Syncthing.lnk`)
+works but bypasses `stctl.exe` and the system tray. If you used this method,
+remove the shortcut and replace with the scheduled task above:
+
+```powershell
+# Remove startup shortcut if present
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Syncthing.lnk" -ErrorAction SilentlyContinue
+
+# Then create the scheduled task using the block above
+```
+
 ### Manual start/stop (for testing)
 
 ```powershell
@@ -76,7 +105,10 @@ Register-ScheduledTask `
 
 ## 3. Disable WiFi Adapter Power Management
 
-Windows may power down the WiFi adapter after a period of inactivity to save battery. When this happens, the Tailscale WireGuard tunnel drops. Syncthing reconnects eventually, but the gap causes sync failures and the periodic disconnects described in troubleshooting Issue 2.
+Windows may power down the WiFi adapter after a period of inactivity to save
+battery. When this happens, the Tailscale WireGuard tunnel drops. Syncthing
+reconnects eventually, but the gap causes sync failures and the periodic
+disconnects described in troubleshooting Issue 2.
 
 This setting must be changed for **every WiFi adapter** on each laptop.
 
@@ -94,7 +126,6 @@ Repeat for any additional network adapters (e.g., Ethernet, Bluetooth adapter if
 ### Verify via PowerShell
 
 ```powershell
-# List all adapters and their power management state
 Get-NetAdapter | ForEach-Object {
     $name = $_.Name
     $pm = (Get-NetAdapterPowerManagement -Name $name -ErrorAction SilentlyContinue).AllowComputerToTurnOffDevice
@@ -107,14 +138,17 @@ Get-NetAdapter | ForEach-Object {
 
 ## 4. Pin Syncthing Device Addresses to Tailscale IPs
 
-By default, Syncthing uses `dynamic` address discovery, which includes mDNS and global discovery probes outside the Tailscale tunnel. Under the CGNAT configuration of the relay node, these discovery attempts fail and cause connection resets.
+By default, Syncthing uses `dynamic` address discovery, which includes mDNS
+and global discovery probes outside the Tailscale tunnel. Under the CGNAT
+configuration of the relay node, these discovery attempts fail and cause
+connection resets.
 
-Pin every peer device's address to its Tailscale IP to force all traffic through the encrypted tunnel.
+Pin every peer device's address to its Tailscale IP to force all traffic
+through the encrypted tunnel.
 
 ### Find Tailscale IPs
 
 ```powershell
-# On each machine, run:
 tailscale status
 # Note the 100.x.x.x IP for each node
 ```
@@ -127,88 +161,125 @@ tailscale status
    ```
    quic://100.x.x.x:22000, tcp://100.x.x.x:22000
    ```
-   Where `100.x.x.x` is that device's Tailscale IP.
 4. Click **Save**
 
-Repeat this on **both laptop nodes** for **all peer devices** (the relay and the other laptop).
+Repeat on **both laptop nodes** for **all peer devices**.
 
-### Example — `node-us-east` configuration
+### Node Tailscale IPs (this mesh)
 
-| Device | Address field |
-|---|---|
-| relay-node-in | `quic://100.x.x.3:22000, tcp://100.x.x.3:22000` |
-| node-us-west | `quic://100.x.x.2:22000, tcp://100.x.x.2:22000` |
-
-Replace `100.x.x.x` with actual Tailscale IPs from `tailscale status`.
+| Node | Tailscale IP | Address field |
+|---|---|---|
+| `relay-node-in` | `100.127.52.60` | `quic://100.127.52.60:22000, tcp://100.127.52.60:22000` |
+| `node-us-east` | `100.67.74.77` | `quic://100.67.74.77:22000, tcp://100.67.74.77:22000` |
+| `node-us-west` | `100.104.175.22` | `quic://100.104.175.22:22000, tcp://100.104.175.22:22000` |
 
 ---
 
 ## 5. Set the Folder Encryption Password
 
-Both laptop nodes must use the **same folder encryption password** so they can decrypt files pulled from the relay.
+Both laptop nodes must use the **same folder encryption password** so they can
+decrypt files pulled from the relay.
 
 1. Syncthing GUI → Click the shared folder → **Edit**
 2. Click the **Sharing** tab
-3. Find the relay device (`relay-node-in`) in the device list
-4. Enter the same **Encryption Password** on both laptop nodes
+3. Find `relay-node-in` in the device list
+4. Enter the **Encryption Password** — must match on both laptops
 5. Click **Save**, then **Restart** Syncthing when prompted
 
-> ⚠️ The relay node does **not** have an encryption password — it stores encrypted blobs without knowing the key. Set the password only on the laptop nodes.
+> ⚠️ The relay node does **not** have an encryption password — it stores
+> encrypted blobs without knowing the key. Set the password only on the
+> laptop nodes.
 
 ---
 
 ## 6. Place `.stignore` in the Sync Folder
 
-Copy the `.stignore` file from this repo into the root of your synced folder **before** Syncthing scans it for the first time. Without it, any `node_modules` directory in the folder will cause "invalid encrypted path" errors that crash all connections (see troubleshooting Issue 5).
+Copy the `.stignore` file from this repo into the root of your synced folder
+**before** Syncthing scans it for the first time. Without it, any
+`node_modules` directory in the folder will cause "invalid encrypted path"
+errors that crash all connections (see troubleshooting Issue 5).
 
 ```powershell
-# Example — adjust path to match your sync folder location
 Copy-Item "path\to\distributed-sync-mesh\.stignore" "C:\Users\<username>\Sync\.stignore"
 ```
 
-If Syncthing has already scanned and synced `node_modules`, add the `.stignore` file, then in Syncthing GUI: Edit Folder → **Rescan**. Files already synced will not be removed from peers; they will simply stop being tracked going forward.
+If Syncthing has already scanned and synced `node_modules`, add the
+`.stignore` file, then in Syncthing GUI: Edit Folder → **Rescan**.
 
 ---
 
-## 7. Verify the Setup
+## 7. Initial Sync Expectations
 
-Run through this checklist after completing all steps:
+The first sync of ~19.6 GiB across 172,000+ files takes time. What to expect:
+
+| Phase | What you see | Normal? |
+|---|---|---|
+| Indexing | High CPU, folder shows "Scanning" | ✅ Yes |
+| Syncing | Gradual % progress, "Syncing (X%, Y MiB)" | ✅ Yes |
+| Relay writing | High iowait on Pi (SD card saturation) | ✅ Yes — one-time only |
+| "Waiting to Sync" | Folder paused waiting for peer | ✅ Yes — resolves automatically |
+| "no connected device has the required version" | Transient — peer went offline mid-sync | ✅ Yes — resolves on reconnect |
+
+After initial sync completes, incremental syncs are near-instant (< 30 seconds
+end-to-end) and the relay uses < 2% CPU at idle.
+
+**Do not interrupt the initial sync.** Both laptops and the Pi can go offline
+independently — Syncthing resumes automatically from where it left off.
+
+---
+
+## 8. Verify the Full Setup
 
 ```powershell
 # 1. Tailscale mesh is up
 tailscale status
-# Expected: relay-node-in and the other laptop both show as connected (green)
 
-# 2. Syncthing GUI loads
-Start-Process "http://127.0.0.1:8384"
-# Expected: GUI opens; all devices show as Connected
+# 2. Syncthing is running
+Get-Process syncthing -ErrorAction SilentlyContinue
 
-# 3. No dynamic addresses remain
-# In Syncthing GUI, check each device's address field — none should say "dynamic"
-
-# 4. Service is running and will survive reboot
+# 3. Autostart scheduled task is ready
 Get-ScheduledTask -TaskName "Start Syncthing at logon" | Select-Object TaskName, State
-# Expected: State = Ready
 
-# 5. WiFi adapter will not be powered off
+# 4. WiFi adapter power management is disabled
 Get-NetAdapterPowerManagement -Name "Wi-Fi" | Select-Object AllowComputerToTurnOffDevice
 # Expected: Disabled
+
+# 5. Syncthing GUI is reachable
+Start-Process "http://127.0.0.1:8384"
+# Confirm: all devices show Connected, no devices show "dynamic" address
 ```
 
 ---
 
 ## Config File Location (Windows)
 
-If you need to inspect or back up the Syncthing config on Windows:
-
 ```
 %LOCALAPPDATA%\Syncthing\config.xml
 ```
 
-The API key is in this file under `<apikey>`. Never commit this file to a public repository.
-
-To open the folder in Explorer:
+The API key is in this file under `<apikey>`. Never commit this file to a
+public repository.
 
 ```powershell
 explorer "$env:LOCALAPPDATA\Syncthing"
 ```
+
+---
+
+## Device Naming Reference
+
+Syncthing device labels are cosmetic and do not affect sync. The canonical
+names for this mesh are:
+
+| Syncthing label | Device | Old name (if migrating) |
+|---|---|---|
+| `relay-node-in` | Raspberry Pi 5 · India | — |
+| `node-us-east` | Laptop 1 · Windows (`Naveen`) | Clouma |
+| `node-us-west` | Laptop 2 · Windows (`hpspe`) | Soul |
+
+To rename a device: Syncthing GUI → click the device → **Edit** → update
+the **Name** field → **Save**. Device ID is unchanged.
+
+---
+
+*Last updated: June 2026 — Syncthing v2.1.1, Windows 10/11, Tailscale, relay-node-in on Raspberry Pi 5 · Debian 13*
