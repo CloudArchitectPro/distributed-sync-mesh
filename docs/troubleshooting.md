@@ -288,3 +288,135 @@ grep -E "connectionLimit(Max|Enough)" ~/.local/state/syncthing/config.xml
 ss -tlnp | grep 22000
 # Should show 100.x.x.x:22000, not 0.0.0.0:22000
 ```
+
+## Issue 7 — Encryption Consistency Errors After Plaintext Cleanup on relay-node-in
+
+### Symptoms
+
+After manually deleting plaintext files from the Pi relay (files synced before
+`receiveencrypted` was configured), Syncthing floods the notice log with:
+
+```
+Failed to verify encryption consistency (folder.label="Nextcloud Sync"
+folder.id=ynfqn-iijap folder.type=receiveencrypted
+device=MZCBZBT error="open: no such file or directory" log.pkg=model)
+
+Failed initial scan (error="folder marker missing (this indicates potential
+data loss...)") folder.label="Nextcloud Sync"
+```
+
+The folder shows **Stopped** and both remote devices show **Disconnected**.
+
+### Root Cause
+
+Three compounding issues:
+
+1. **Stale index** — Syncthing's internal database (`index-v2.db`) still
+   references the deleted plaintext files and attempts to verify their
+   encryption tokens on every connection attempt.
+
+2. **`.stfolder` deleted or recreated as a file** — The `find` cleanup
+   command deleted `.stfolder` if it wasn't explicitly excluded as a
+   directory. Recreating it with `touch` makes it a file, but Syncthing
+   requires it to be a **directory** containing the encryption password
+   token file inside it.
+
+3. **Encryption token missing** — The token file
+   `.stfolder/syncthing-encryption_password_token` is written by the
+   laptop nodes on first connection. If `.stfolder` is a file instead of
+   a directory, the token can't be written and every connection attempt
+   fails with `lstat: not a directory`.
+
+### Fix — Complete Reset of relay-node-in Sync Folder
+
+**Always stop Syncthing before any manual file operations on the sync folder.**
+
+```bash
+# 1. Stop Syncthing
+sudo systemctl stop syncthing@santhosham.service
+
+# 2. Wipe the entire sync folder (encrypted blobs will be re-synced from laptops)
+rm -rf ~/Nextcloud\ Sync/
+
+# 3. Recreate with correct structure
+mkdir -p ~/Nextcloud\ Sync/
+mkdir -p ~/Nextcloud\ Sync/.stfolder   # must be a directory, not a file
+
+# 4. Wipe the stale index database
+rm -rf ~/.local/state/syncthing/index-v2.db
+
+# 5. Confirm clean state
+ls -la ~/Nextcloud\ Sync/
+# Expected:
+# drwxrwxr-x  .stfolder    ← directory, not a file
+
+# 6. Start Syncthing
+sudo systemctl start syncthing@santhosham.service
+sleep 15 && systemctl status syncthing@santhosham.service | grep Active
+```
+
+After restart, Syncthing will:
+- Rebuild its index from scratch
+- Reconnect to both laptop nodes
+- Receive the encryption token from the laptops on first connection
+- Begin re-syncing all files as encrypted blobs
+
+The re-sync takes several hours (same as initial sync) but completes cleanly
+with no errors.
+
+### Prevention — Safe Plaintext Cleanup Procedure
+
+When removing pre-encryption plaintext files from the relay, always:
+
+1. **Stop Syncthing first**
+2. **Explicitly exclude `.stfolder` and `.stversions`** in the find command
+3. **Wipe the index** after deletion so stale references are cleared
+4. **Restart Syncthing** and let it rebuild from actual disk contents
+
+```bash
+# Correct cleanup procedure
+sudo systemctl stop syncthing@santhosham.service
+
+# Dry run first — verify what will be deleted
+find ~/Nextcloud\ Sync/ -maxdepth 1 \
+  ! -name "*.syncthing-enc" \
+  ! -name ".stfolder" \
+  ! -name ".stversions" \
+  ! -path "/home/santhosham/Nextcloud Sync" \
+  | grep -v "^/home/santhosham/Nextcloud Sync$"
+
+# Only after confirming dry run output — delete
+find ~/Nextcloud\ Sync/ -maxdepth 1 \
+  ! -name "*.syncthing-enc" \
+  ! -name ".stfolder" \
+  ! -name ".stversions" \
+  ! -path "/home/santhosham/Nextcloud Sync" \
+  -exec rm -rf {} +
+
+# Confirm .stfolder is still a directory
+ls -la ~/Nextcloud\ Sync/.stfolder
+# Must show: drwx... (directory) NOT -rw... (file)
+
+# Wipe index to clear stale references
+rm -rf ~/.local/state/syncthing/index-v2.db
+
+# Restart
+sudo systemctl start syncthing@santhosham.service
+```
+
+### Data Safety
+
+All data is safe throughout this process. The Pi relay stores only encrypted
+blobs — the plaintext copies exist on `node-us-east` and `node-us-west`.
+Wiping the Pi's sync folder only requires a re-sync from the laptops; no
+data is lost.
+
+### Key Rule
+
+> **Never run manual file operations on the Syncthing folder while Syncthing
+> is running.** Always `sudo systemctl stop syncthing@santhosham.service`
+> first, operate, clear the index, then restart.
+
+---
+
+*Last updated: June 2026 — Syncthing v2.1.1, Raspberry Pi 5 · Debian 13*
